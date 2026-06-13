@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kensington — test suite</title>
+<style>
+  body { font-family: ui-monospace, Menlo, Consolas, monospace; background: #16181d; color: #d6d2c8; padding: 24px; }
+  h1 { font-size: 18px; }
+  pre { font-size: 13px; line-height: 1.5; }
+  .ok { color: #7fd06c; }
+  .fail { color: #f0685c; }
+</style>
+</head>
+<body>
+<h1>Kensington test suite</h1>
+<pre id="out">running…</pre>
+<script src="js/board.js"></script>
+<script src="js/rules.js"></script>
+<script src="js/engine.js"></script>
+<script src="tests/tests.js"></script>
+<script>
+  var r = KTests.report();
+  document.getElementById('out').innerHTML = r.lines.map(function (l) {
+    if (l.indexOf('PASS') === 0) return '<span class="ok">' + l + '</span>';
+    if (l.indexOf('FAIL') === 0 || l.indexOf('      -') === 0) return '<span class="fail">' + l + '</span>';
+    return l;
+  }).join('\n');
+</script>
+</body>
+</html>

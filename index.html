@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kensington</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+
+  <aside class="panel">
+    <header class="masthead">
+      <h1>Kensington</h1>
+      <p class="tagline">Surround a hexagon to win</p>
+    </header>
+
+    <section class="status-card" id="statusCard">
+      <div class="turn-row">
+        <span class="turn-chip" id="turnChip"></span>
+        <span class="turn-text" id="turnText">&nbsp;</span>
+      </div>
+      <div class="phase-text" id="phaseText">&nbsp;</div>
+      <div class="message" id="message">&nbsp;</div>
+    </section>
+
+    <section class="reserves">
+      <div class="reserve">
+        <span class="reserve-label red-label">Red</span>
+        <div class="dots" id="dotsRed"></div>
+      </div>
+      <div class="reserve">
+        <span class="reserve-label blue-label">Blue</span>
+        <div class="dots" id="dotsBlue"></div>
+      </div>
+    </section>
+
+    <section class="buttons">
+      <button id="btnSkip" class="btn primary hidden">Skip relocation</button>
+      <button id="btnUndo" class="btn">Undo</button>
+      <button id="btnNew" class="btn">New game</button>
+    </section>
+
+    <details class="rules">
+      <summary>How to play</summary>
+      <ul>
+        <li>Each player has 15 stones. Red begins.</li>
+        <li><strong>Placement:</strong> take turns placing a stone on any empty point.</li>
+        <li><strong>Movement:</strong> once all stones are placed, slide one of
+            your stones along a line to an adjacent empty point. If you cannot
+            move, your opponent moves again.</li>
+        <li><strong>Mills:</strong> complete a small <em>triangle</em> in your
+            color and you may move <em>one</em> enemy stone anywhere; complete a
+            <em>square</em> and you may move <em>two</em>. Never more than two
+            per turn.</li>
+        <li><strong>Win</strong> by occupying all six corners of a white hexagon
+            or a hexagon of your own color.</li>
+      </ul>
+    </details>
+  </aside>
+
+  <main class="board-wrap" id="boardWrap">
+    <svg id="board" viewBox="-500 -500 1000 1000" role="img" aria-label="Kensington board"></svg>
+    <div class="overlay hidden" id="overlay">
+      <div class="overlay-card">
+        <div class="overlay-title" id="overlayTitle"></div>
+        <div class="overlay-sub" id="overlaySub"></div>
+        <div class="overlay-buttons">
+          <button class="btn primary" id="btnOverlayNew">New game</button>
+          <button class="btn" id="btnOverlayClose">View board</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<dialog id="dlgNew">
+  <form method="dialog" id="formNew">
+    <h2>New game</h2>
+
+    <fieldset>
+      <legend>Opponent</legend>
+      <div class="seg" id="segMode">
+        <label><input type="radio" name="mode" value="ai" checked><span>Computer</span></label>
+        <label><input type="radio" name="mode" value="2p"><span>Two players</span></label>
+      </div>
+    </fieldset>
+
+    <fieldset id="fsColor">
+      <legend>Your color</legend>
+      <div class="seg" id="segColor">
+        <label><input type="radio" name="color" value="red" checked><span><i class="mini-stone mini-red"></i>Red</span></label>
+        <label><input type="radio" name="color" value="blue"><span><i class="mini-stone mini-blue"></i>Blue</span></label>
+        <label><input type="radio" name="color" value="random"><span>Random</span></label>
+      </div>
+      <p class="hint-line">Red always moves first.</p>
+    </fieldset>
+
+    <fieldset id="fsLevel">
+      <legend>Difficulty</legend>
+      <div class="seg seg-level" id="segLevel">
+        <label><input type="radio" name="level" value="1"><span>1</span></label>
+        <label><input type="radio" name="level" value="2"><span>2</span></label>
+        <label><input type="radio" name="level" value="3" checked><span>3</span></label>
+        <label><input type="radio" name="level" value="4"><span>4</span></label>
+        <label><input type="radio" name="level" value="5"><span>5</span></label>
+      </div>
+      <p class="hint-line" id="levelHint">Medium — thinks a few moves ahead.</p>
+    </fieldset>
+
+    <div class="dialog-buttons">
+      <button class="btn primary" value="start" id="btnStart">Start game</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="js/board.js"></script>
+<script src="js/rules.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
