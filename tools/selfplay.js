@@ -96,7 +96,7 @@ function parseArgs(argv) {
     else if (k === '--help' || k === '-h') { o.help = true; }
     else if (k.slice(0, 2) === '--') {
       var name = k.slice(2), val = argv[++i];
-      if (['games', 'depth', 'random', 'seed', 'maxplies'].indexOf(name) >= 0) o[name] = parseInt(val, 10);
+      if (['games', 'depth', 'random', 'seed', 'maxplies', 'level', 'time'].indexOf(name) >= 0) o[name] = parseInt(val, 10);
       else if (name === 'noise') o.noise = parseFloat(val);
       else o[name] = val;
     }
@@ -123,27 +123,43 @@ function main() {
   if (!VARIANTS[o.a]) { console.error('unknown weight set: ' + o.a); process.exit(1); }
   if (!VARIANTS[o.b]) { console.error('unknown weight set: ' + o.b); process.exit(1); }
 
-  var search = { maxDepth: o.depth, timeMs: Infinity, noise: o.noise };
+  // Either a real level preset (time-based, like the app's difficulty levels)
+  // or a deterministic fixed depth (timeMs: Infinity). --time overrides the
+  // level's per-move budget.
+  var search;
+  if (o.level) {
+    if (!KEngine.LEVELS[o.level]) { console.error('unknown level: ' + o.level); process.exit(1); }
+    search = Object.assign({}, KEngine.LEVELS[o.level], { noise: o.noise });
+    if (o.time) search.timeMs = o.time;
+  } else {
+    search = { maxDepth: o.depth, timeMs: Infinity, noise: o.noise };
+  }
   var cfgA = Object.assign({ name: o.a, weights: VARIANTS[o.a] }, search);
   var cfgB = Object.assign({ name: o.b, weights: VARIANTS[o.b] }, search);
 
   console.log('Kensington self-play');
   console.log('  A = ' + o.a + '  ' + JSON.stringify(VARIANTS[o.a]));
   console.log('  B = ' + o.b + '  ' + JSON.stringify(VARIANTS[o.b]));
-  console.log('  games=' + o.games + ' depth=' + o.depth + ' random=' + o.random +
-    ' seed=' + o.seed + ' noise=' + o.noise);
+  console.log('  games=' + o.games +
+    (o.level ? ' level=' + o.level + ' timeMs=' + search.timeMs + ' maxDepth=' + search.maxDepth
+             : ' depth=' + o.depth) +
+    ' random=' + o.random + ' seed=' + o.seed + ' noise=' + o.noise);
   console.log('');
 
   var t0 = Date.now();
   var res = KArena.runMatch(cfgA, cfgB, {
     games: o.games, seed: o.seed, randomPlies: o.random, maxPlies: o.maxplies,
     onGame: o.quiet ? null : function (i, r, agg) {
-      var w = r.winner === 0 ? 'draw' : (r.winner === 1 ? 'red' : 'blue') + ' (' + r.winHexColor + ')';
-      var line = 'game ' + String(i + 1).padStart(3) + '  ' + w.padEnd(14) +
-        ' ' + String(r.plies).padStart(3) + ' plies' +
-        '   running A: ' + agg.aWins + '-' + agg.bWins + '-' + agg.draws +
-        ' (' + pct((agg.aWins + agg.draws / 2) / agg.games) + ')';
-      process.stdout.write('\r' + line.padEnd(78));
+      var w = r.winner === 0 ? 'draw' + (r.drawReason ? ' (' + r.drawReason + ')' : '')
+            : (r.winner === 1 ? 'red' : 'blue') + ' wins (' + r.winHexColor + ' hex)';
+      var elapsed = ((Date.now() - t0) / 1000).toFixed(0) + 's';
+      var line = 'game ' + String(i + 1).padStart(3) + '  ' + w.padEnd(20) +
+        String(r.plies).padStart(4) + ' plies  ' +
+        'running A:' + agg.aWins + ' B:' + agg.bWins + ' D:' + agg.draws +
+        '  [' + elapsed + ']';
+      // overwrite one line interactively, but log a line per game when piped
+      if (process.stdout.isTTY) process.stdout.write('\r' + line.padEnd(78));
+      else console.log(line);
     }
   });
   var secs = (Date.now() - t0) / 1000;
