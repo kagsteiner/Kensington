@@ -5,6 +5,17 @@ A client-only web implementation of the board game
 Peter Forbes, 1979). Plain HTML + CSS + JavaScript, no dependencies, no build
 step.
 
+## Vibe Coding warning
+
+The app has been fully vibe coded by Claude Fable. I've reviewed the code, though
+I cannot claim I have understood its full Rhombitrihexagonal tiling beauty. This
+is clearly better code than I can write (although I write code since the early
+80s. Oh my).
+
+You can play the game in my homepage:
+
+[Kensington app](https://agsteiner.neocities.org/appsngames/Kensington/)
+
 ## Run
 
 Open `index.html` in any modern browser. Open `tests.html` to run the test
