@@ -5,11 +5,11 @@
 (function (global, factory) {
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = factory(require('../js/board.js'), require('../js/rules.js'),
-      require('../js/engine.js'), require('../js/arena.js'));
+      require('../js/engine.js'), require('../js/arena.js'), require('../js/tuner.js'));
   } else {
-    global.KTests = factory(global.KBoard, global.KRules, global.KEngine, global.KArena);
+    global.KTests = factory(global.KBoard, global.KRules, global.KEngine, global.KArena, global.KTuner);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (B, K, E, A) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (B, K, E, A, Tu) {
   'use strict';
 
   var RED = K.RED, BLUE = K.BLUE, EMPTY = K.EMPTY;
@@ -749,6 +749,37 @@
       // identical contestants over a color-swapped schedule: results mirror,
       // so the match must be dead even
       eq(res.aWins, res.bWins, 'identical engines score equally (color-swap fairness)');
+    });
+  }
+
+  // ---- tuner (logistic fit) --------------------------------------------------
+
+  if (Tu) {
+    test('tuner.fit learns a separable synthetic pattern', function () {
+      var rnd = mulberry32(7);
+      var nF = 4, wTrue = [2, -1, 0.5, 0];        // feature 3 is irrelevant
+      var X = [], y = [];
+      for (var i = 0; i < 3000; i++) {
+        var f = new Float64Array(nF), score = 0;
+        for (var j = 0; j < nF; j++) { f[j] = rnd() * 4 - 2; score += f[j] * wTrue[j]; }
+        X.push(f); y.push(score > 0 ? 1 : 0);
+      }
+      var corpus = { X: X, y: y, nFeatures: nF };
+      var init = new Float64Array([0.2, 0.2, 0.2, 0.2]);
+      var K = Tu.fitK(corpus, init);
+      var out = Tu.fit(corpus, { init: init, K: K });
+
+      var correct = 0;
+      for (i = 0; i < X.length; i++) {
+        var s = 0; for (j = 0; j < nF; j++) s += X[i][j] * out.weights[j];
+        if (((1 / (1 + Math.exp(-K * s))) > 0.5 ? 1 : 0) === y[i]) correct++;
+      }
+      ok(correct / X.length > 0.9, 'fitted model classifies >90% of rows (' +
+        (100 * correct / X.length).toFixed(1) + '%)');
+      ok(out.weights[0] > 0 && out.weights[1] < 0 && out.weights[2] > 0, 'weight signs match the truth');
+      ok(Math.abs(out.weights[3]) < Math.abs(out.weights[0]) * 0.5,
+        'the irrelevant feature gets a comparatively small weight');
+      ok(out.mse < Tu.mse(corpus, init, K), 'MSE improved over the starting weights');
     });
   }
 
