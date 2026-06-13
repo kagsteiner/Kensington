@@ -38,81 +38,241 @@
   };
 
   // ---------------------------------------------------------------------
-  // Static evaluation, from the point of view of `c` (the side to move).
+  // Static evaluation as a weighted sum of named features.
+  //
+  // The evaluation is split in two:
+  //   extractFeatures(g, out) fills `out` with RED-perspective raw feature
+  //     values. Each feature is (red's count - blue's count) of some pattern,
+  //     so the vector is antisymmetric and a single weight vector serves both
+  //     sides.
+  //   evaluate(g, weights) dots that vector with a weight vector and flips the
+  //     sign for the side to move.
+  //
+  // A "variant evaluation" is therefore just a different weight set. To add a
+  // new idea: append its name to FEATURES, compute it in the matching board
+  // sweep below, and give it a weight in the sets you want to try (a feature
+  // absent from a weight object defaults to 0, i.e. it has no effect).
   // ---------------------------------------------------------------------
 
-  // value of having n own tokens on a 6-vertex hexagon with no enemy tokens
-  var HEX_CLEAN = [0, 4, 14, 40, 120, 420];
-  // same, but one enemy token spoils it (still some value: mills can evict)
-  var HEX_DIRTY = [0, 1, 4, 12, 40, 140];
-  var TRI_THREAT = 8;    // 2 own + 1 empty on a triangle
-  var SQ_THREAT = 14;    // 3 own + 1 empty on a square
-  var SQ_BUILD = 3;      // 2 own + 2 empty on a square
-  var MOBILITY = 2;      // per empty neighbor of an own token (movement phase)
-  var TEMPO = 6;
+  var FEATURES = [
+    // own k stones on a hexagon the side may win, opponent has none (k = 1..5)
+    'hex1', 'hex2', 'hex3', 'hex4', 'hex5',
+    // own k stones on such a hexagon, opponent has exactly one (still evictable)
+    'dirty1', 'dirty2', 'dirty3', 'dirty4', 'dirty5',
+    'triThreat',    // triangle with 2 own + 1 empty (mill threat)
+    'sqThreat',     // square with 3 own + 1 empty (double-mill threat)
+    'sqBuild',      // square with 2 own + 2 empty
+    'mobility',     // free neighbours of own stones (movement phase only)
+    'tempo',        // side to move
+    // --- features off by default (weight 0 in base); turn on to experiment ---
+    // The last three are computed only in the movement phase, and only when
+    // their weight is non-zero, so they cost nothing in the base evaluation.
+    'multiThreat',  // having >= 2 hexagons with own >= 4 and no enemy at once,
+                    // a proxy for an impending unstoppable double threat that a
+                    // shallow search cannot see coming
+    'winReach',     // closeness to completing a winnable hexagon, scored as
+                    // (M - estimated slides to bring stones onto its empty
+                    // vertices): "moves to win, if the opponent does nothing"
+    'millLive',     // open mill (2 own + 1 empty triangle) whose gap the
+                    // opponent CANNOT step into next move (no adjacent enemy)
+    'millBlocked'   // open mill whose gap an adjacent enemy stone can block
+  ];
+  var NF = FEATURES.length;
+  var FI = {};
+  FEATURES.forEach(function (name, i) { FI[name] = i; });
 
-  function evaluate(g) {
-    var B = g.B, board = g.board;
-    var score = 0; // positive = good for RED
-    var i, j, v, redCnt, blueCnt, emptyCnt;
+  // indices captured as locals for the hot path (order-independent writes)
+  var I_HEX1 = FI.hex1, I_DIRTY1 = FI.dirty1, I_TRI = FI.triThreat,
+      I_SQT = FI.sqThreat, I_SQB = FI.sqBuild, I_MOB = FI.mobility,
+      I_TEMPO = FI.tempo, I_MULTI = FI.multiThreat,
+      I_REACH = FI.winReach, I_LIVE = FI.millLive, I_BLOCKED = FI.millBlocked;
 
+  // Named weight sets. `base` reproduces the original hand-tuned constants
+  // exactly. Authoring a variant: see tools/selfplay.js.
+  var WEIGHTS = {
+    base: {
+      hex1: 4, hex2: 14, hex3: 40, hex4: 120, hex5: 420,
+      dirty1: 1, dirty2: 4, dirty3: 12, dirty4: 40, dirty5: 140,
+      triThreat: 8, sqThreat: 14, sqBuild: 3, mobility: 2, tempo: 6,
+      multiThreat: 0, winReach: 0, millLive: 0, millBlocked: 0
+    }
+  };
+
+  // Turn a weight set into a Float64Array aligned to FEATURES. A plain object
+  // is treated as overrides on top of `base`, so a variant need only list the
+  // knobs it changes. A Float64Array is returned as-is (already compiled).
+  function compileWeights(w) {
+    if (w instanceof Float64Array) return w;
+    var merged = Object.assign({}, WEIGHTS.base, w || {});
+    var arr = new Float64Array(NF);
+    for (var name in merged) {
+      if (FI[name] === undefined) throw new Error('unknown feature weight: ' + name);
+      arr[FI[name]] = merged[name];
+    }
+    return arr;
+  }
+
+  // Resolve opts.weights (a Float64Array, a name in WEIGHTS, an overrides
+  // object, or undefined) to a compiled Float64Array.
+  function resolveWeights(w) {
+    if (!w) return DEFAULT_WEIGHTS;
+    if (w instanceof Float64Array) return w;
+    if (typeof w === 'string') {
+      if (!WEIGHTS[w]) throw new Error('unknown weight set: ' + w);
+      return compileWeights(WEIGHTS[w]);
+    }
+    return compileWeights(w);
+  }
+
+  var DEFAULT_WEIGHTS = compileWeights(WEIGHTS.base);
+  var scratch = new Float64Array(NF); // reused; consumed immediately by evaluate
+
+  // All-pairs shortest-path distances on the (static) board graph, computed
+  // once: DIST[a][b] = number of slides between vertices a and b. The winReach
+  // feature uses it to estimate how many moves it takes to bring stones onto a
+  // hexagon's empty vertices.
+  var DIST = (function () {
+    var n = KBoard.N, all = new Array(n);
+    for (var s = 0; s < n; s++) {
+      var d = new Int8Array(n); d.fill(-1); d[s] = 0;
+      var q = [s];
+      for (var qi = 0; qi < q.length; qi++) {
+        var u = q[qi], nb = KBoard.adj[u];
+        for (var k = 0; k < nb.length; k++) {
+          var w2 = nb[k];
+          if (d[w2] < 0) { d[w2] = d[u] + 1; q.push(w2); }
+        }
+      }
+      all[s] = d;
+    }
+    return all;
+  })();
+
+  var REACH_M = 10, REACH_DCAP = 6;
+
+  // "moves to win" potential for one hexagon: REACH_M minus the summed slide
+  // distance of the cheapest stones routed to its empty vertices (one stone per
+  // vertex, opponent ignored). Stones already on the hexagon stay put. Bigger =
+  // closer to completing the hexagon.
+  function reachPotential(B, stones, hi, empties) {
+    var T = 0;
+    for (var k = 0; k < empties.length; k++) {
+      var de = DIST[empties[k]], best = REACH_DCAP;
+      for (var si = 0; si < stones.length; si++) {
+        var st = stones[si];
+        if (B.hexAt[st] === hi) continue;     // keep stones already holding this hexagon
+        var d = de[st];
+        if (d >= 0 && d < best) best = d;
+      }
+      T += best;
+      if (T >= REACH_M) return 0;
+    }
+    return REACH_M - T;
+  }
+
+  // Is an open mill's empty vertex blockable next move by `blocker`, i.e. does
+  // `blocker` have a stone adjacent to the gap that could step into it?
+  function millGapBlocked(B, board, t, blocker) {
+    var gap = board[t[0]] === EMPTY ? t[0] : board[t[1]] === EMPTY ? t[1] : t[2];
+    var nb = B.adj[gap];
+    for (var z = 0; z < nb.length; z++) if (board[nb[z]] === blocker) return true;
+    return false;
+  }
+
+  // Fills `out` (aligned to FEATURES) with RED-perspective raw features. The
+  // movement-only winReach/millLive/millBlocked features are computed only when
+  // `w` is absent (inspection) or assigns them a non-zero weight.
+  function extractFeatures(g, out, w) {
+    var B = g.B, board = g.board, i, j, v, r, b;
+    out = out || scratch;
+    for (i = 0; i < NF; i++) out[i] = 0;
+
+    var movement = g.phase() === 'movement';
+    var doMill = movement && (!w || w[I_LIVE] !== 0 || w[I_BLOCKED] !== 0);
+    var doReach = movement && (!w || w[I_REACH] !== 0);
+
+    var redStrongHex = 0, blueStrongHex = 0;
     for (i = 0; i < B.hexes.length; i++) {
       var h = B.hexes[i];
       var owner = KRules.hexOwner(h.color);
-      redCnt = 0; blueCnt = 0;
+      r = 0; b = 0;
       for (j = 0; j < 6; j++) {
         v = board[h.verts[j]];
-        if (v === RED) redCnt++; else if (v === BLUE) blueCnt++;
+        if (v === RED) r++; else if (v === BLUE) b++;
       }
-      if (owner !== BLUE) { // RED may win here
-        if (blueCnt === 0) score += HEX_CLEAN[redCnt];
-        else if (blueCnt === 1) score += HEX_DIRTY[redCnt];
+      if (owner !== BLUE) {            // RED may win on this hexagon
+        if (b === 0 && r > 0) { out[I_HEX1 + r - 1] += 1; if (r >= 4) redStrongHex++; }
+        else if (b === 1 && r > 0) out[I_DIRTY1 + r - 1] += 1;
       }
-      if (owner !== RED) { // BLUE may win here
-        if (redCnt === 0) score -= HEX_CLEAN[blueCnt];
-        else if (redCnt === 1) score -= HEX_DIRTY[blueCnt];
+      if (owner !== RED) {             // BLUE may win on this hexagon
+        if (r === 0 && b > 0) { out[I_HEX1 + b - 1] -= 1; if (b >= 4) blueStrongHex++; }
+        else if (r === 1 && b > 0) out[I_DIRTY1 + b - 1] -= 1;
       }
     }
+    if (redStrongHex >= 2) out[I_MULTI] += 1;
+    if (blueStrongHex >= 2) out[I_MULTI] -= 1;
 
     for (i = 0; i < B.triangles.length; i++) {
       var t = B.triangles[i];
-      redCnt = 0; blueCnt = 0;
-      for (j = 0; j < 3; j++) {
-        v = board[t[j]];
-        if (v === RED) redCnt++; else if (v === BLUE) blueCnt++;
+      r = 0; b = 0;
+      for (j = 0; j < 3; j++) { v = board[t[j]]; if (v === RED) r++; else if (v === BLUE) b++; }
+      if (r === 2 && b === 0) {
+        out[I_TRI] += 1;
+        if (doMill) out[millGapBlocked(B, board, t, BLUE) ? I_BLOCKED : I_LIVE] += 1;
+      } else if (b === 2 && r === 0) {
+        out[I_TRI] -= 1;
+        if (doMill) out[millGapBlocked(B, board, t, RED) ? I_BLOCKED : I_LIVE] -= 1;
       }
-      if (redCnt === 2 && blueCnt === 0) score += TRI_THREAT;
-      else if (blueCnt === 2 && redCnt === 0) score -= TRI_THREAT;
     }
 
     for (i = 0; i < B.squares.length; i++) {
       var s = B.squares[i];
-      redCnt = 0; blueCnt = 0;
-      for (j = 0; j < 4; j++) {
-        v = board[s[j]];
-        if (v === RED) redCnt++; else if (v === BLUE) blueCnt++;
-      }
-      if (blueCnt === 0) {
-        if (redCnt === 3) score += SQ_THREAT;
-        else if (redCnt === 2) score += SQ_BUILD;
-      } else if (redCnt === 0) {
-        if (blueCnt === 3) score -= SQ_THREAT;
-        else if (blueCnt === 2) score -= SQ_BUILD;
-      }
+      r = 0; b = 0;
+      for (j = 0; j < 4; j++) { v = board[s[j]]; if (v === RED) r++; else if (v === BLUE) b++; }
+      if (b === 0) { if (r === 3) out[I_SQT] += 1; else if (r === 2) out[I_SQB] += 1; }
+      else if (r === 0) { if (b === 3) out[I_SQT] -= 1; else if (b === 2) out[I_SQB] -= 1; }
     }
 
-    if (g.phase() === 'movement') {
+    if (movement) {
+      var mob = 0;
       for (v = 0; v < B.N; v++) {
         var col = board[v];
         if (col === EMPTY) continue;
         var nbs = B.adj[v], free = 0;
         for (j = 0; j < nbs.length; j++) if (board[nbs[j]] === EMPTY) free++;
-        if (col === RED) score += free * MOBILITY; else score -= free * MOBILITY;
+        if (col === RED) mob += free; else mob -= free;
       }
+      out[I_MOB] = mob;
     }
 
-    var fromRed = score + (g.toMove === RED ? TEMPO : -TEMPO);
-    return g.toMove === RED ? fromRed : -fromRed;
+    if (doReach) {
+      var redS = [], blueS = [];
+      for (v = 0; v < B.N; v++) { if (board[v] === RED) redS.push(v); else if (board[v] === BLUE) blueS.push(v); }
+      var pot = 0;
+      for (i = 0; i < B.hexes.length; i++) {
+        var hx = B.hexes[i], own2 = KRules.hexOwner(hx.color);
+        r = 0; b = 0;
+        var empties = [];
+        for (j = 0; j < 6; j++) {
+          var u = hx.verts[j], cc = board[u];
+          if (cc === RED) r++; else if (cc === BLUE) b++; else empties.push(u);
+        }
+        if (own2 !== BLUE && b === 0 && r >= 1 && r < 6) pot += reachPotential(B, redS, i, empties);
+        if (own2 !== RED && r === 0 && b >= 1 && b < 6) pot -= reachPotential(B, blueS, i, empties);
+      }
+      out[I_REACH] = pot;
+    }
+
+    out[I_TEMPO] = g.toMove === RED ? 1 : -1;
+    return out;
+  }
+
+  function evaluate(g, weights) {
+    var w = weights || DEFAULT_WEIGHTS;
+    extractFeatures(g, scratch, w);
+    var s = 0;
+    for (var i = 0; i < NF; i++) s += scratch[i] * w[i];
+    return g.toMove === RED ? s : -s;
   }
 
   // ---------------------------------------------------------------------
@@ -262,6 +422,7 @@
   function Search(game, cfg) {
     this.g = game;
     this.cfg = cfg;
+    this.weights = cfg.weights;          // compiled Float64Array
     this.deadline = Date.now() + cfg.timeMs;
     this.nodes = 0;
     this.tt = new Map(); // posKey -> {depth, value, flag, best}
@@ -285,7 +446,7 @@
       return g.winner === g.toMove ? WIN - ply : -(WIN - ply);
     }
     if (g.draw) return 0;
-    if (depth <= 0 && g.relocsLeft === 0) return evaluate(g);
+    if (depth <= 0 && g.relocsLeft === 0) return evaluate(g, this.weights);
 
     var key = g._posKey() + ':' + g.relocsLeft;
     var entry = this.tt.get(key);
@@ -363,12 +524,16 @@
 
   /*
    * Picks a move for game.toMove. opts: {level} or explicit
-   * {maxDepth, timeMs, noise, rFrom, rTo, placeCap}. Works on a clone, so
-   * the passed game is never mutated.
+   * {maxDepth, timeMs, noise, rFrom, rTo, placeCap, weights}. `weights` may be
+   * a compiled Float64Array, a name in WEIGHTS, or an overrides object; it
+   * defaults to the base weight set. Pass timeMs: Infinity for a deterministic
+   * fixed-depth search (used by self-play). Works on a clone, so the passed
+   * game is never mutated.
    */
   function chooseMove(game, opts) {
     opts = opts || {};
     var cfg = Object.assign({}, LEVELS[opts.level || 3], opts);
+    cfg.weights = resolveWeights(opts.weights);
     var legal = game.legalMoves();
     if (legal.length === 0) return null;
     if (legal.length === 1) return legal[0];
@@ -413,6 +578,12 @@
   return {
     chooseMove: chooseMove,
     evaluate: evaluate,
+    extractFeatures: extractFeatures,
+    compileWeights: compileWeights,
+    resolveWeights: resolveWeights,
+    FEATURES: FEATURES,
+    FI: FI,
+    WEIGHTS: WEIGHTS,
     genMoves: genMoves,
     LEVELS: LEVELS,
     WIN: WIN

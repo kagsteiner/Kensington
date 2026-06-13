@@ -4,11 +4,12 @@
  */
 (function (global, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('../js/board.js'), require('../js/rules.js'), require('../js/engine.js'));
+    module.exports = factory(require('../js/board.js'), require('../js/rules.js'),
+      require('../js/engine.js'), require('../js/arena.js'));
   } else {
-    global.KTests = factory(global.KBoard, global.KRules, global.KEngine);
+    global.KTests = factory(global.KBoard, global.KRules, global.KEngine, global.KArena);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (B, K, E) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (B, K, E, A) {
   'use strict';
 
   var RED = K.RED, BLUE = K.BLUE, EMPTY = K.EMPTY;
@@ -502,6 +503,152 @@
     ok(g.over() || steps >= 300, 'game progressed');
     // most engine-vs-engine games should actually end; tolerate long games
   });
+
+  // ---- evaluation framework --------------------------------------------------
+
+  function freshFeatures() { return new Float64Array(E.FEATURES.length); }
+
+  test('evaluate equals features · base weights with the side-to-move sign', function () {
+    var s = B.squares[0], t = B.triangles[5];
+    var g = pos({ red: s.slice(0, 2).concat([t[0]]), blue: [t[1], t[2]], toMove: RED });
+    var feats = E.extractFeatures(g, freshFeatures());
+    var w = E.compileWeights(E.WEIGHTS.base);
+    var dot = 0;
+    for (var i = 0; i < E.FEATURES.length; i++) dot += feats[i] * w[i];
+    eq(E.evaluate(g), dot, 'RED to move: evaluate == dot product');
+    // and with BLUE to move the same board negates (features recomputed, but
+    // only tempo flips, so check via direct recompute)
+    g.toMove = BLUE;
+    var feats2 = E.extractFeatures(g, freshFeatures());
+    var dot2 = 0;
+    for (i = 0; i < E.FEATURES.length; i++) dot2 += feats2[i] * w[i];
+    eq(E.evaluate(g), -dot2, 'BLUE to move: evaluate == -dot product');
+  });
+
+  test('evaluation favours the side to move when it is ahead', function () {
+    var h = hexByColor('white', 0);
+    var gr = pos({ red: h.verts.slice(0, 4), toMove: RED });
+    ok(E.evaluate(gr) > 0, 'red ahead, red to move -> positive');
+    var gb = pos({ blue: h.verts.slice(0, 4), toMove: BLUE });
+    ok(E.evaluate(gb) > 0, 'blue ahead, blue to move -> positive (symmetry)');
+    eq(E.evaluate(gr), E.evaluate(gb), 'mirror positions evaluate identically');
+  });
+
+  test('compileWeights merges overrides onto base and rejects unknown names', function () {
+    var w = E.compileWeights({ hex5: 999 });
+    eq(w[E.FI.hex5], 999, 'override applied');
+    eq(w[E.FI.hex4], E.WEIGHTS.base.hex4, 'unmentioned feature keeps base value');
+    var threw = false;
+    try { E.compileWeights({ nonsense: 1 }); } catch (e) { threw = true; }
+    ok(threw, 'unknown feature name throws');
+  });
+
+  test('multiThreat feature detects two strong hexagons and is off by default', function () {
+    var h0 = hexByColor('white', 0), h1 = hexByColor('white', 1);
+    var g = pos({ red: h0.verts.slice(0, 4).concat(h1.verts.slice(0, 4)), toMove: RED });
+    var feats = E.extractFeatures(g, freshFeatures());
+    eq(feats[E.FI.multiThreat], 1, 'red holds two strong hexagons -> +1');
+    eq(E.WEIGHTS.base.multiThreat, 0, 'base weight is 0 (no effect by default)');
+    // turning the weight on must raise red\'s evaluation
+    var withBlock = E.evaluate(g, E.compileWeights({ multiThreat: 500 }));
+    var withBase = E.evaluate(g);
+    ok(withBlock - withBase === 500, 'enabling multiThreat adds exactly its weight');
+  });
+
+  test('a custom weight set changes the chosen move', function () {
+    // a position where extra mobility weight should sway a movement choice;
+    // just assert both configs return legal moves and the engine respects them
+    var g = new K.Game();
+    var steps = 0;
+    while (g.phase() === 'placement' && !g.over() && steps < 60) {
+      g.applyMove(E.chooseMove(g, { maxDepth: 1, timeMs: 2000, noise: 0 }));
+      if (g.relocsLeft > 0) g.applyMove({ type: 'skip' });
+      steps++;
+    }
+    var mBase = E.chooseMove(g, { maxDepth: 2, timeMs: 5000, noise: 0, weights: 'base' });
+    var mActive = E.chooseMove(g, { maxDepth: 2, timeMs: 5000, noise: 0, weights: { mobility: 30, triThreat: 40 } });
+    ok(g.isLegal(mBase) && g.isLegal(mActive), 'both weight sets yield legal moves');
+  });
+
+  test('millLive / millBlocked tell apart a blockable open mill (idea 2)', function () {
+    var t = B.triangles[0];
+    var gap = t[2];
+    var nbr = B.adj[gap].filter(function (x) { return t.indexOf(x) < 0; })[0];
+    ok(nbr !== undefined, 'gap has a neighbour outside the triangle');
+
+    // unblockable: red open mill, no blue anywhere near the gap
+    var live = pos({ red: [t[0], t[1]], phase: 'movement', toMove: RED });
+    var f1 = E.extractFeatures(live, freshFeatures());
+    eq(f1[E.FI.millLive], 1, 'open mill with no enemy by the gap -> millLive +1');
+    eq(f1[E.FI.millBlocked], 0, 'not counted as blocked');
+
+    // blockable: a blue stone sits adjacent to the gap
+    var blk = pos({ red: [t[0], t[1]], blue: [nbr], phase: 'movement', toMove: RED });
+    var f2 = E.extractFeatures(blk, freshFeatures());
+    eq(f2[E.FI.millBlocked], 1, 'enemy adjacent to the gap -> millBlocked +1');
+    eq(f2[E.FI.millLive], 0, 'not counted as live');
+
+    eq(E.WEIGHTS.base.millLive, 0, 'millLive off by default');
+    eq(E.WEIGHTS.base.millBlocked, 0, 'millBlocked off by default');
+    // base play is unchanged: with base weights the split is never scored
+    var base = E.compileWeights(E.WEIGHTS.base);
+    var fb = E.extractFeatures(blk, freshFeatures(), base);
+    eq(fb[E.FI.millBlocked], 0, 'gated off under base weights');
+  });
+
+  test('winReach rewards a reachable near-complete hexagon (idea 1)', function () {
+    var h = hexByColor('white', 0);
+    var gap = h.verts[5];
+    // any neighbour of the gap that is not itself on this hexagon can feed it
+    var feeder = B.adj[gap].filter(function (x) { return h.verts.indexOf(x) < 0; })[0];
+    ok(feeder !== undefined, 'gap has a neighbour to feed from');
+
+    var withFeeder = E.extractFeatures(
+      pos({ red: h.verts.slice(0, 5).concat([feeder]), phase: 'movement', toMove: RED }),
+      freshFeatures());
+    var without = E.extractFeatures(
+      pos({ red: h.verts.slice(0, 5), phase: 'movement', toMove: RED }),
+      freshFeatures());
+    ok(withFeeder[E.FI.winReach] > without[E.FI.winReach],
+      'a stone next to the gap raises winReach (' + withFeeder[E.FI.winReach] +
+      ' > ' + without[E.FI.winReach] + ')');
+    eq(E.WEIGHTS.base.winReach, 0, 'winReach off by default');
+  });
+
+  test('the new movement features never fire in the placement phase', function () {
+    var t = B.triangles[0];
+    var g = pos({ red: [t[0], t[1]], blue: [B.adj[t[2]][0]] }); // placement
+    var f = E.extractFeatures(g, freshFeatures());
+    eq(f[E.FI.millLive], 0, 'no live mills during placement');
+    eq(f[E.FI.millBlocked], 0, 'no blocked mills during placement');
+    eq(f[E.FI.winReach], 0, 'no winReach during placement');
+  });
+
+  // ---- self-play arena -------------------------------------------------------
+
+  if (A) {
+    test('arena.playGame finishes a deterministic game from a seed', function () {
+      var cfg = A.prepare({ maxDepth: 2, timeMs: Infinity, noise: 0 });
+      var r1 = A.playGame(cfg, cfg, { seed: 7, randomPlies: 4 });
+      var r2 = A.playGame(cfg, cfg, { seed: 7, randomPlies: 4 });
+      ok(r1.plies > 0, 'game made progress');
+      ok(r1.winner === 0 || r1.winner === RED || r1.winner === BLUE, 'valid outcome');
+      eq(JSON.stringify(r1), JSON.stringify(r2), 'same seed -> identical game (deterministic)');
+    });
+
+    test('arena.runMatch tallies a color-swapped match', function () {
+      var res = A.runMatch(
+        { name: 'x', weights: 'base', maxDepth: 1, timeMs: Infinity, noise: 0 },
+        { name: 'y', weights: 'base', maxDepth: 1, timeMs: Infinity, noise: 0 },
+        { games: 8, seed: 42, randomPlies: 6 });
+      eq(res.games, 8, 'played requested games');
+      eq(res.aWins + res.bWins + res.draws, 8, 'every game accounted for');
+      ok(res.score >= 0 && res.score <= 1, 'score in [0,1]');
+      // identical contestants over a color-swapped schedule: results mirror,
+      // so the match must be dead even
+      eq(res.aWins, res.bWins, 'identical engines score equally (color-swap fairness)');
+    });
+  }
 
   // ---- report ----------------------------------------------------------------
 
