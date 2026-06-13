@@ -75,7 +75,14 @@
                     // vertices): "moves to win, if the opponent does nothing"
     'millLive',     // open mill (2 own + 1 empty triangle) whose gap the
                     // opponent CANNOT step into next move (no adjacent enemy)
-    'millBlocked'   // open mill whose gap an adjacent enemy stone can block
+    'millBlocked',  // open mill whose gap an adjacent enemy stone can block
+    'millClosed',   // a completed mill (3 own on a triangle)
+    'millRunning',  // a completed mill that can be safely swung open and shut
+                    // (a member can step out to an empty vertex with no enemy
+                    // able to occupy the vacated point) -- a relocation engine
+    'coordination'  // own adjacent stone-pairs: high = clustered and able to
+                    // build mills/hexagons, low = scattered (the inverse of the
+                    // "spread" a swinging mill inflicts on its victim)
   ];
   var NF = FEATURES.length;
   var FI = {};
@@ -85,7 +92,8 @@
   var I_HEX1 = FI.hex1, I_DIRTY1 = FI.dirty1, I_TRI = FI.triThreat,
       I_SQT = FI.sqThreat, I_SQB = FI.sqBuild, I_MOB = FI.mobility,
       I_TEMPO = FI.tempo, I_MULTI = FI.multiThreat,
-      I_REACH = FI.winReach, I_LIVE = FI.millLive, I_BLOCKED = FI.millBlocked;
+      I_REACH = FI.winReach, I_LIVE = FI.millLive, I_BLOCKED = FI.millBlocked,
+      I_CLOSED = FI.millClosed, I_RUNNING = FI.millRunning, I_COORD = FI.coordination;
 
   // Named weight sets. `base` reproduces the original hand-tuned constants
   // exactly. Authoring a variant: see tools/selfplay.js.
@@ -94,7 +102,8 @@
       hex1: 4, hex2: 14, hex3: 40, hex4: 120, hex5: 420,
       dirty1: 1, dirty2: 4, dirty3: 12, dirty4: 40, dirty5: 140,
       triThreat: 8, sqThreat: 14, sqBuild: 3, mobility: 2, tempo: 6,
-      multiThreat: 0, winReach: 0, millLive: 0, millBlocked: 0
+      multiThreat: 0, winReach: 0, millLive: 0, millBlocked: 0,
+      millClosed: 0, millRunning: 0, coordination: 0
     }
   };
 
@@ -179,6 +188,27 @@
     return false;
   }
 
+  // Can a closed mill of color `c` be safely swung? It can if some member stone
+  // has an empty vertex outside the triangle to step out to (re-opening the
+  // mill) while no enemy stone sits next to that member -- so the opponent
+  // cannot occupy the vacated point and the mill can be shut again next turn,
+  // relocating an enemy stone. Such a "running mill" relocates roughly one enemy
+  // stone every two moves.
+  function millSwingable(B, board, t, c) {
+    var enemy = 3 - c;
+    for (var m = 0; m < 3; m++) {
+      var V = t[m], nb = B.adj[V], emptyOut = false, enemyAdj = false;
+      for (var z = 0; z < nb.length; z++) {
+        var u = nb[z];
+        if (u === t[0] || u === t[1] || u === t[2]) continue; // triangle's own edges
+        if (board[u] === EMPTY) emptyOut = true;
+        else if (board[u] === enemy) enemyAdj = true;
+      }
+      if (emptyOut && !enemyAdj) return true;
+    }
+    return false;
+  }
+
   // Fills `out` (aligned to FEATURES) with RED-perspective raw features. The
   // movement-only winReach/millLive/millBlocked features are computed only when
   // `w` is absent (inspection) or assigns them a non-zero weight.
@@ -188,8 +218,10 @@
     for (i = 0; i < NF; i++) out[i] = 0;
 
     var movement = g.phase() === 'movement';
-    var doMill = movement && (!w || w[I_LIVE] !== 0 || w[I_BLOCKED] !== 0);
+    var doMill = movement && (!w || w[I_LIVE] !== 0 || w[I_BLOCKED] !== 0 ||
+                              w[I_CLOSED] !== 0 || w[I_RUNNING] !== 0);
     var doReach = movement && (!w || w[I_REACH] !== 0);
+    var doCoord = movement && (!w || w[I_COORD] !== 0);
 
     var redStrongHex = 0, blueStrongHex = 0;
     for (i = 0; i < B.hexes.length; i++) {
@@ -216,7 +248,11 @@
       var t = B.triangles[i];
       r = 0; b = 0;
       for (j = 0; j < 3; j++) { v = board[t[j]]; if (v === RED) r++; else if (v === BLUE) b++; }
-      if (r === 2 && b === 0) {
+      if (r === 3) {
+        if (doMill) { out[I_CLOSED] += 1; if (millSwingable(B, board, t, RED)) out[I_RUNNING] += 1; }
+      } else if (b === 3) {
+        if (doMill) { out[I_CLOSED] -= 1; if (millSwingable(B, board, t, BLUE)) out[I_RUNNING] -= 1; }
+      } else if (r === 2 && b === 0) {
         out[I_TRI] += 1;
         if (doMill) out[millGapBlocked(B, board, t, BLUE) ? I_BLOCKED : I_LIVE] += 1;
       } else if (b === 2 && r === 0) {
@@ -243,6 +279,16 @@
         if (col === RED) mob += free; else mob -= free;
       }
       out[I_MOB] = mob;
+    }
+
+    if (doCoord) {
+      var coord = 0, eg, ca;
+      for (i = 0; i < B.edges.length; i++) {
+        eg = B.edges[i];
+        ca = board[eg[0]];
+        if (ca !== EMPTY && ca === board[eg[1]]) coord += ca === RED ? 1 : -1;
+      }
+      out[I_COORD] = coord;
     }
 
     if (doReach) {

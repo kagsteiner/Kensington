@@ -83,12 +83,21 @@ when given a non-zero weight, so they cost nothing by default:
 - `millLive` / `millBlocked` — split an open mill (`2 own + 1 empty` triangle)
   by whether the opponent has a stone adjacent to the gap and can block it next
   move. A live (unblockable) mill is a strong weapon; a blockable one is not.
+- `millClosed` / `millRunning` — value a *completed* mill (which the base eval
+  ignored entirely). `millRunning` flags a closed mill that can be safely swung
+  open and shut — a member can step out to an empty vertex with no enemy able to
+  occupy the vacated point — i.e. a relocation engine. Valuing the running mill
+  above `millLive` makes the engine close and swing rather than sit on a threat.
+- `coordination` — own adjacent stone-pairs (`red − blue`): high = clustered and
+  able to combine, low = scattered. The inverse of the "spread" a swinging mill
+  inflicts; rewards staying coordinated and scattering the opponent.
 
-In quick self-play (depth 3, 150 games) the most useful of these so far is a
-mild **penalty on blockable mills** (`{ millLive: 24, millBlocked: -7 }`, ~53%
-vs `base`); the live-mill bonus alone is inert, `winReach` is roughly neutral as
-formulated, and over-strong weights backfire. None are conclusive yet — they
-are left for further tuning rather than turned on by default.
+These are starting points for tuning, not proven defaults. In self-play they
+range from roughly neutral to mildly positive; `coordination` notably makes
+games more decisive (fewer aimless movement-phase draws). The base evaluation is
+left unchanged — the experiments are opt-in via weights. The browser app's
+computer player does enable a combined set (see `AI_WEIGHTS` in
+[`js/ui.js`](js/ui.js)); set it to `null` to play the plain `base` engine.
 
 ### Self-play
 

@@ -64,7 +64,22 @@ var VARIANTS = {
 
   // Idea-2 ablations: bonus only vs. a stronger bonus+penalty.
   liveonly: { millLive: 24 },
-  livemill2: { millLive: 40, millBlocked: -12 }
+  livemill2: { millLive: 40, millBlocked: -12 },
+
+  // Value the *running* mill (closed + safely swingable) highly, and keep the
+  // open-mill bonus modest so the engine prefers to close and swing rather than
+  // sit on a static threat.
+  running: { millRunning: 40, millClosed: 4, millLive: 8, millBlocked: -6 },
+
+  // The full "swing then build" plan: a running mill to scatter the opponent
+  // plus winReach to steer toward completing a hexagon.
+  swarm: { millRunning: 40, millClosed: 4, millLive: 8, millBlocked: -6, winReach: 6 },
+
+  // Anti-scatter: reward keeping your own stones clustered (able to combine).
+  coord: { coordination: 3 },
+
+  // Everything together: swing-then-build plus the anti-scatter term.
+  swarm2: { millRunning: 40, millClosed: 4, millLive: 8, millBlocked: -6, winReach: 6, coordination: 3 }
 };
 
 // ---------------------------------------------------------------------------

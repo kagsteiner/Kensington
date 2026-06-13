@@ -34,6 +34,23 @@
     5: 'Expert — deep search, takes its time.'
   };
 
+  // Evaluation weights the computer plays with. These are overrides on the
+  // engine's `base` set, so anything omitted keeps its default. Currently the
+  // experimental movement-phase features are enabled to try the "swing a
+  // running mill to scatter the opponent, then build a hexagon" plan:
+  //   winReach: 6                     -> steer toward completing a hexagon
+  //   millRunning: 40, millClosed: 4  -> value a closed mill you can swing
+  //   millLive: 8, millBlocked: -6    -> a modest open-mill bonus, so the
+  //                                      engine prefers to CLOSE and swing
+  //                                      rather than sit on a static threat
+  //   coordination: 3                 -> keep own stones clustered; resist
+  //                                      being scattered (and scatter the foe)
+  // To return to the plain default evaluation, set AI_WEIGHTS = null.
+  var AI_WEIGHTS = {
+    winReach: 6, millRunning: 40, millClosed: 4, millLive: 8, millBlocked: -6,
+    coordination: 3
+  };
+
   // ---- svg helpers -----------------------------------------------------
 
   function svgEl(name, attrs, parent) {
@@ -360,7 +377,7 @@
       render();
       // let the browser paint the "thinking" state before the search blocks
       setTimeout(function () {
-        var m = E.chooseMove(game, { level: settings.level });
+        var m = E.chooseMove(game, { level: settings.level, weights: AI_WEIGHTS });
         aiThinking = false;
         if (m) playMove(m);
         else render();

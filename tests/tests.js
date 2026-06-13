@@ -596,6 +596,56 @@
     eq(fb[E.FI.millBlocked], 0, 'gated off under base weights');
   });
 
+  test('millClosed / millRunning value a completed, swingable mill', function () {
+    var t = B.triangles[0];
+
+    // a closed red mill with empty surroundings can be swung
+    var run = pos({ red: t.slice(), phase: 'movement', toMove: RED });
+    var f1 = E.extractFeatures(run, freshFeatures());
+    eq(f1[E.FI.millClosed], 1, '3 own on a triangle -> millClosed +1');
+    eq(f1[E.FI.millRunning], 1, 'room to swing, no enemy -> millRunning +1');
+
+    // wall it in: an enemy stone beside every member kills the swing
+    var blue = [];
+    t.forEach(function (V) {
+      var ext = B.adj[V].filter(function (x) { return t.indexOf(x) < 0; });
+      for (var k = 0; k < ext.length; k++) {
+        if (blue.indexOf(ext[k]) < 0) { blue.push(ext[k]); break; }
+      }
+    });
+    var stuck = pos({ red: t.slice(), blue: blue, phase: 'movement', toMove: RED });
+    var f2 = E.extractFeatures(stuck, freshFeatures());
+    eq(f2[E.FI.millRunning], 0, 'an enemy next to every member kills the swing');
+    ok(f2[E.FI.millClosed] >= 1, 'still scored as a closed mill');
+
+    eq(E.WEIGHTS.base.millClosed, 0, 'millClosed off by default');
+    eq(E.WEIGHTS.base.millRunning, 0, 'millRunning off by default');
+  });
+
+  test('coordination counts own adjacent pairs (the anti-scatter feature)', function () {
+    var a = 0, nb = B.adj[a][0];
+    // two adjacent red stones -> one own-own edge
+    var together = pos({ red: [a, nb], phase: 'movement', toMove: RED });
+    eq(E.extractFeatures(together, freshFeatures())[E.FI.coordination], 1,
+      'adjacent own pair -> coordination +1');
+
+    // the same two stones placed apart -> no own-own edge
+    var apart = -1;
+    for (var v = 0; v < B.N; v++) {
+      if (v !== a && B.adj[a].indexOf(v) < 0) { apart = v; break; }
+    }
+    var scattered = pos({ red: [a, apart], phase: 'movement', toMove: RED });
+    eq(E.extractFeatures(scattered, freshFeatures())[E.FI.coordination], 0,
+      'non-adjacent stones -> coordination 0 (scattered)');
+
+    // antisymmetry: blue clustered is negative
+    var blueTogether = pos({ blue: [a, nb], phase: 'movement', toMove: RED });
+    eq(E.extractFeatures(blueTogether, freshFeatures())[E.FI.coordination], -1,
+      'adjacent blue pair -> coordination -1');
+
+    eq(E.WEIGHTS.base.coordination, 0, 'coordination off by default');
+  });
+
   test('winReach rewards a reachable near-complete hexagon (idea 1)', function () {
     var h = hexByColor('white', 0);
     var gap = h.verts[5];
@@ -617,11 +667,17 @@
 
   test('the new movement features never fire in the placement phase', function () {
     var t = B.triangles[0];
-    var g = pos({ red: [t[0], t[1]], blue: [B.adj[t[2]][0]] }); // placement
-    var f = E.extractFeatures(g, freshFeatures());
-    eq(f[E.FI.millLive], 0, 'no live mills during placement');
-    eq(f[E.FI.millBlocked], 0, 'no blocked mills during placement');
-    eq(f[E.FI.winReach], 0, 'no winReach during placement');
+    var open = pos({ red: [t[0], t[1]], blue: [B.adj[t[2]][0]] }); // placement, open mill
+    var fo = E.extractFeatures(open, freshFeatures());
+    eq(fo[E.FI.millLive], 0, 'no live mills during placement');
+    eq(fo[E.FI.millBlocked], 0, 'no blocked mills during placement');
+    eq(fo[E.FI.winReach], 0, 'no winReach during placement');
+
+    var closed = pos({ red: t.slice() }); // placement, closed mill (adjacent stones)
+    var fc = E.extractFeatures(closed, freshFeatures());
+    eq(fc[E.FI.millClosed], 0, 'no closed-mill score during placement');
+    eq(fc[E.FI.millRunning], 0, 'no running-mill score during placement');
+    eq(fc[E.FI.coordination], 0, 'no coordination score during placement');
   });
 
   // ---- self-play arena -------------------------------------------------------
