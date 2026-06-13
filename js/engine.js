@@ -403,8 +403,13 @@
     return s;
   }
 
-  // how harmful it is (for the mover) to park an enemy token on empty vertex u
-  function parkPenalty(g, mover, u) {
+  // How harmful it is (for the mover) to park an enemy token on empty vertex u.
+  // The hexagon terms avoid handing the enemy a hexagon or wasting the mover's
+  // own developing one. When `smart` (default), the mill term steers the
+  // relocation into a "dead zone" -- a spot the enemy can't quickly turn into a
+  // mill, either because the mover's stones smother the surrounding figures or
+  // because it is isolated. High = bad place to park.
+  function parkPenalty(g, mover, u, smart) {
     var B = g.B, board = g.board, e = 3 - mover, s = 0, j, w;
     var hi = B.hexAt[u];
     if (hi >= 0) {
@@ -418,6 +423,66 @@
       if ((owner === 0 || owner === e) && own === 0) s += (enemy + 1) * (enemy + 1) * 30;
       if ((owner === 0 || owner === mover) && enemy === 0) s += own * own * 25 + 5;
     }
+    if (smart !== false) s += enemyMillPotential(g, mover, u);
+    return s;
+  }
+
+  // Does `color` have a stone next to the gap vertex but OUTSIDE triangle t -- a
+  // feeder that could slide in to complete the mill? (The two stones already on
+  // t can't: moving one of them just re-opens the figure.)
+  function feederAdjacent(B, board, t, gap, color) {
+    var nb = B.adj[gap];
+    for (var z = 0; z < nb.length; z++) {
+      var w = nb[z];
+      if (w === t[0] || w === t[1] || w === t[2]) continue;
+      if (board[w] === color) return true;
+    }
+    return false;
+  }
+
+  // How much would parking an ENEMY stone at empty vertex u advance an enemy
+  // mill within a move or two? Cheap, because each vertex lies in exactly one
+  // triangle and one or two squares. Returns 0 for a dead zone: smothered by a
+  // mover stone, or isolated from enemy stones.
+  function enemyMillPotential(g, mover, u) {
+    var B = g.B, board = g.board, e = 3 - mover;
+    var placement = g.phase() === 'placement';
+    var s = 0, i, j, vtx;
+
+    var tris = B.trianglesAt[u];
+    for (i = 0; i < tris.length; i++) {
+      var t = B.triangles[tris[i]];
+      var en = 0, blocked = false, gap = -1;
+      for (j = 0; j < 3; j++) {
+        vtx = t[j];
+        if (vtx === u) continue;
+        if (board[vtx] === e) en++;
+        else if (board[vtx] === mover) blocked = true;
+        else gap = vtx;
+      }
+      if (blocked) continue;                  // mover smothers this triangle
+      if (en === 2) s += 900;                 // parking completes a closed enemy mill
+      else if (en === 1) {                    // parking makes 2-of-3, one gap left
+        // completable next move if the enemy can place there (placement) or has
+        // a feeder to slide in (movement); otherwise it is a two-move threat
+        s += (placement || (gap >= 0 && feederAdjacent(B, board, t, gap, e))) ? 300 : 90;
+      }
+    }
+
+    var sqs = B.squaresAt[u];                 // a square is a double mill -> weightier
+    for (i = 0; i < sqs.length; i++) {
+      var q = B.squares[sqs[i]];
+      var en4 = 0, blk = false;
+      for (j = 0; j < 4; j++) {
+        vtx = q[j];
+        if (vtx === u) continue;
+        if (board[vtx] === e) en4++;
+        else if (board[vtx] === mover) blk = true;
+      }
+      if (blk) continue;
+      if (en4 === 3) s += 1400;               // parking completes an enemy double mill
+      else if (en4 === 2) s += 60;            // builds toward one
+    }
     return s;
   }
 
@@ -425,10 +490,11 @@
     var B = g.B, board = g.board, c = g.toMove, e = 3 - c;
     var nFrom = cfg.rFrom + (atRoot ? 2 : 0);
     var nTo = cfg.rTo + (atRoot ? 2 : 0);
+    var smart = cfg.smartPark !== false;       // mill-aware relocation, on by default
     var froms = [], tos = [], v;
     for (v = 0; v < B.N; v++) {
       if (board[v] === e) froms.push({ v: v, s: evictionScore(g, c, v) });
-      else if (board[v] === EMPTY) tos.push({ v: v, s: parkPenalty(g, c, v) });
+      else if (board[v] === EMPTY) tos.push({ v: v, s: parkPenalty(g, c, v, smart) });
     }
     froms.sort(function (a, b) { return b.s - a.s; });
     tos.sort(function (a, b) { return a.s - b.s; });
@@ -631,6 +697,7 @@
     FI: FI,
     WEIGHTS: WEIGHTS,
     genMoves: genMoves,
+    parkPenalty: parkPenalty,
     LEVELS: LEVELS,
     WIN: WIN
   };

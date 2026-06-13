@@ -504,6 +504,52 @@
     // most engine-vs-engine games should actually end; tolerate long games
   });
 
+  // ---- relocation placement (smart parking) ----------------------------------
+
+  // a rim vertex (degree < 4, on no hexagon) and the triangle it completes
+  function rimGap() {
+    for (var v = 0; v < B.N; v++) if (B.hexAt[v] < 0) return v;
+    return -1;
+  }
+
+  test('parkPenalty steers a relocation away from feeding an enemy mill', function () {
+    var gap = rimGap();
+    var t = B.triangles[B.trianglesAt[gap][0]];
+    var others = t.filter(function (v) { return v !== gap; });
+    // blue holds the other two vertices; dropping blue on `gap` completes its mill
+    var g = pos({ blue: others, phase: 'movement', toMove: RED });
+    function noBlue(x) { return g.board[x] !== BLUE; }
+    // a clean dead-zone vertex: rim, in a different triangle, no blue in its cells
+    var dead = -1;
+    for (var v = 0; v < B.N; v++) {
+      if (B.hexAt[v] >= 0 || v === gap || B.trianglesAt[v][0] === B.trianglesAt[gap][0]) continue;
+      var triClean = B.triangles[B.trianglesAt[v][0]].every(noBlue);
+      var sqClean = B.squaresAt[v].every(function (si) { return B.squares[si].every(noBlue); });
+      if (triClean && sqClean) { dead = v; break; }
+    }
+    ok(dead >= 0, 'found a dead-zone vertex');
+    ok(E.parkPenalty(g, RED, gap, true) > E.parkPenalty(g, RED, dead, true),
+      'mill-completing spot penalised vs dead zone (' +
+      E.parkPenalty(g, RED, gap, true) + ' > ' + E.parkPenalty(g, RED, dead, true) + ')');
+    eq(E.parkPenalty(g, RED, gap, false), E.parkPenalty(g, RED, dead, false),
+      'with smartPark off, the old heuristic sees both as equal');
+  });
+
+  test('the engine never relocates an enemy stone into a mill (tactical)', function () {
+    var gap = rimGap();
+    var t = B.triangles[B.trianglesAt[gap][0]];
+    var others = t.filter(function (v) { return v !== gap; });
+    var loose = rimVerts([gap].concat(t), 12)[0]; // a loose blue stone to relocate
+    var g = pos({
+      red: rimVerts([gap, loose].concat(t), 20).slice(0, 4),
+      blue: others.concat([loose]),
+      phase: 'movement', toMove: RED, relocsLeft: 1
+    });
+    var m = E.chooseMove(g, { maxDepth: 2, timeMs: 5000, noise: 0 });
+    ok(!(m.type === 'relocate' && m.to === gap),
+      'does not drop the enemy stone onto the spot that completes its mill');
+  });
+
   // ---- evaluation framework --------------------------------------------------
 
   function freshFeatures() { return new Float64Array(E.FEATURES.length); }
