@@ -34,21 +34,20 @@
     5: 'Expert — deep search, takes its time.'
   };
 
-  // Evaluation weights the computer plays with. These are overrides on the
-  // engine's `base` set, so anything omitted keeps its default. Currently the
-  // experimental movement-phase features are enabled to try the "swing a
-  // running mill to scatter the opponent, then build a hexagon" plan:
-  //   winReach: 6                     -> steer toward completing a hexagon
-  //   millRunning: 40, millClosed: 4  -> value a closed mill you can swing
-  //   millLive: 8, millBlocked: -6    -> a modest open-mill bonus, so the
-  //                                      engine prefers to CLOSE and swing
-  //                                      rather than sit on a static threat
-  //   coordination: 3                 -> keep own stones clustered; resist
-  //                                      being scattered (and scatter the foe)
-  // To return to the plain default evaluation, set AI_WEIGHTS = null.
+  // Evaluation weights the computer plays with (overrides on the engine's
+  // `base` set). This is the "hybrid": the overnight Texel tuner's data-driven
+  // discoveries -- a FLATTER hexagon curve (hex5 420->222, so the engine does
+  // not over-rush a hexagon and abandon a winning mill too early) plus stronger
+  // square/triangle threats and coordination -- grafted onto swarm2's explicit
+  // running-mill emphasis (millRunning: 40), the deep-search weapon a shallow
+  // corpus could not learn. Beats base ~65% and leans ahead of swarm2 (~54%) at
+  // depth 3. To return to the plain default evaluation, set AI_WEIGHTS = null.
   var AI_WEIGHTS = {
-    winReach: 6, millRunning: 40, millClosed: 4, millLive: 8, millBlocked: -6,
-    coordination: 3
+    hex1: 4, hex2: 9, hex3: 24, hex4: 84, hex5: 222,
+    dirty1: 1, dirty2: 15, dirty3: 35, dirty4: 91, dirty5: 171,
+    triThreat: 20, sqThreat: 41, sqBuild: 3, mobility: 2, tempo: 12,
+    multiThreat: 0, winReach: 7, coordination: 10,
+    millLive: 8, millBlocked: -6, millClosed: 4, millRunning: 40
   };
 
   // ---- svg helpers -----------------------------------------------------
